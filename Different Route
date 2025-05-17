@@ -1,0 +1,112 @@
+#Instead of focusing on trading this takes the bare roots approch. It uses Bracket orders the best and is a lot more manuel. Does trade effectively for the frist two runs. 
+
+from lumibot.brokers import Alpaca
+from lumibot.backtesting import YahooDataBacktesting
+from lumibot.strategies.strategy import Strategy
+from datetime import datetime
+from alpaca_trade_api import REST
+from timedelta import Timedelta
+
+API_KEY = ""
+API_SECRET = ""
+BASE_URL = "https://paper-api.alpaca.markets/v2"
+
+ALPACA_CREDS = {
+    "API_KEY": API_KEY, 
+    "API_SECRET": API_SECRET,
+    "PAPER": True
+}
+
+class MLTrader(Strategy):
+    def initialize(self, symbol: str = "SPY", cash_at_risk: float = 0.1):
+        self.symbol = symbol
+        self.cash_at_risk = cash_at_risk
+        self.sleeptime = "24H"
+        self.last_buy_price = None
+        self.last_sell_price = None
+        self.in_position = False
+
+    def on_trading_iteration(self):
+        # Retrieve the last price and available cash
+        cash = self.get_cash()
+        last_price = self.get_last_price(self.symbol)
+
+        if not last_price or last_price == 0:
+            print("Invalid price, skipping iteration.")
+            return
+
+        # Calculate the number of shares that can be bought
+        quantity = round(cash * self.cash_at_risk / last_price)
+        if quantity == 0:
+            print("Quantity is 0, insufficient cash.")
+            return
+
+        print(f"Cash: {cash}, Last Price: {last_price}, Quantity: {quantity}")
+        print(f"Last Buy Price: {self.last_buy_price}, Last Sell Price: {self.last_sell_price}")
+
+        # Initial buy to kick off loop
+        if self.last_buy_price is None and not self.in_position:
+            print("Placing initial buy to start loop...")
+            order = self.create_order(
+                self.symbol,
+                quantity,
+                "buy",
+                type="market"
+            )
+            self.submit_order(order)
+            self.last_buy_price = last_price
+            self.in_position = True
+            return
+
+        # Sell if price is $5 above last buy price
+        if self.in_position and last_price >= self.last_buy_price + 5:
+            print("Sell condition met.")
+            order = self.create_order(
+                self.symbol,
+                quantity,
+                "sell",
+                type="market"
+            )
+            self.submit_order(order)
+            self.last_sell_price = last_price
+            self.in_position = False
+            return
+
+        # Buy if price is $5 below last sell price
+        if not self.in_position and self.last_sell_price and last_price <= self.last_sell_price - 5:
+            print("Buy-back condition met.")
+            order = self.create_order(
+                self.symbol,
+                quantity,
+                "buy",
+                type="market"
+            )
+            self.submit_order(order)
+            self.last_buy_price = last_price
+            self.in_position = True
+            return
+
+    def on_order_filled(self, order):
+        print(f"Order filled: {order.side} {order.quantity} @ {order.average_price}")
+        if order.side == "buy":
+            self.last_buy_price = order.average_price
+        elif order.side == "sell":
+            self.last_sell_price = order.average_price
+
+# Define the backtest dates
+start_date = datetime(2023, 10, 1)
+end_date = datetime(2023, 12, 31)
+
+# Create the broker and strategy
+broker = Alpaca(ALPACA_CREDS)
+strategy = MLTrader(name='mlstrat', broker=broker,
+                    parameters={"symbol": "SPY", "cash_at_risk": 0.1})
+
+# Run the backtest
+strategy.backtest(
+    YahooDataBacktesting,
+    start_date,
+    end_date,
+    parameters={"symbol": "SPY", "cash_at_risk": 0.1},
+    simulate_on_order_fill=True  # Ensure cash is updated after each trade
+)
